@@ -39,6 +39,16 @@ enum imx6_pcie_variants {
 	IMX7D,
 };
 
+#define IMX6_PCIE_FLAG_IMX6_PHY			BIT(0)
+#define IMX6_PCIE_FLAG_IMX6_SPEED_CHANGE	BIT(1)
+#define IMX6_PCIE_FLAG_SUPPORTS_SUSPEND		BIT(2)
+
+struct imx6_pcie_drvdata {
+	enum imx6_pcie_variants variant;
+	u32 flags;
+	int dbi_length;
+};
+
 struct imx6_pcie {
 	struct dw_pcie		*pci;
 	int			reset_gpio;
@@ -837,6 +847,33 @@ static void imx6_pcie_shutdown(struct platform_device *pdev)
 	imx6_pcie_assert_core_reset(imx6_pcie);
 }
 
+static const struct imx6_pcie_drvdata drvdata[] = {
+	[IMX6Q] = {
+		.variant = IMX6Q,
+		.flags = IMX6_PCIE_FLAG_IMX6_PHY |
+			 IMX6_PCIE_FLAG_IMX6_SPEED_CHANGE,
+		.dbi_length = 0x200,
+	},
+	[IMX6SX] = {
+		.variant = IMX6SX,
+		.flags = IMX6_PCIE_FLAG_IMX6_PHY |
+			 IMX6_PCIE_FLAG_IMX6_SPEED_CHANGE |
+			 IMX6_PCIE_FLAG_SUPPORTS_SUSPEND,
+	},
+	[IMX6QP] = {
+		.variant = IMX6QP,
+		.flags = IMX6_PCIE_FLAG_IMX6_PHY |
+			 IMX6_PCIE_FLAG_IMX6_SPEED_CHANGE,
+	},
+	[IMX7D] = {
+		.variant = IMX7D,
+		.flags = IMX6_PCIE_FLAG_SUPPORTS_SUSPEND,
+	},
+	[IMX8MQ] = {
+		.variant = IMX8MQ,
+	},
+};
+
 static const struct of_device_id imx6_pcie_of_match[] = {
 	{ .compatible = "fsl,imx6q-pcie",  .data = (void *)IMX6Q,  },
 	{ .compatible = "fsl,imx6sx-pcie", .data = (void *)IMX6SX, },
@@ -854,6 +891,37 @@ static struct platform_driver imx6_pcie_driver = {
 	.probe    = imx6_pcie_probe,
 	.shutdown = imx6_pcie_shutdown,
 };
+
+static void imx6_pcie_quirk(struct pci_dev *dev)
+{
+	struct pci_bus *bus = dev->bus;
+	struct pcie_port *pp = bus->sysdata;
+
+	/* Bus parent is the PCI bridge, its parent is this platform driver */
+	if (!bus->dev.parent || !bus->dev.parent->parent)
+		return;
+
+	/* Make sure we only quirk devices associated with this driver */
+	if (bus->dev.parent->parent->driver != &imx6_pcie_driver.driver)
+		return;
+
+	if (bus->number == pp->root_bus_nr) {
+		struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+		struct imx6_pcie *imx6_pcie = to_imx6_pcie(pci);
+
+		/*
+		 * Limit config length to avoid the kernel reading beyond
+		 * the register set and causing an abort on i.MX 6Quad
+		 */
+		if (imx6_pcie->drvdata->dbi_length) {
+			dev->cfg_size = imx6_pcie->drvdata->dbi_length;
+			dev_info(&dev->dev, "Limiting cfg_size to %d\n",
+					dev->cfg_size);
+		}
+	}
+}
+DECLARE_PCI_FIXUP_CLASS_HEADER(PCI_VENDOR_ID_SYNOPSYS, 0xabcd,
+			PCI_CLASS_BRIDGE_PCI, 8, imx6_pcie_quirk);
 
 static int __init imx6_pcie_init(void)
 {
